@@ -273,7 +273,7 @@ func htmlEscape(s string) string {
 }
 
 func stripMarkdown(md string) string {
-	re := regexp.MustCompile(`[#*` + "`" + `\[\]()>-]`)
+	re := regexp.MustCompile("[#*`\\[\\]()>-]")
 	s := re.ReplaceAllString(md, "")
 	s = strings.ReplaceAll(s, "\n", " ")
 	s = strings.ReplaceAll(s, "  ", " ")

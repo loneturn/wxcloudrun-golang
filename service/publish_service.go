@@ -30,7 +30,7 @@ type PublishResponse struct {
 
 // PublishHandler 微信公众号草稿发布接口
 // POST /api/publish
-// Body: {"title": "xxx", "author": "xxx", "content_md": "## xxx\n\n正文", "digest": "xxx"}
+// Body: {"title":"标题","author":"作者","content_md":"## markdown内容","digest":"摘要"}
 func PublishHandler(w http.ResponseWriter, r *http.Request) {
 	res := &PublishResponse{}
 
@@ -58,11 +58,7 @@ func PublishHandler(w http.ResponseWriter, r *http.Request) {
 		req.Author = "一只家电狗"
 	}
 	if req.Digest == "" {
-		digest := stripMarkdown(req.Content)
-		if len(digest) > 54 {
-			digest = digest[:54] + "..."
-		}
-		req.Digest = digest
+		req.Digest = makeDigest(req.Content)
 	}
 
 	token, err := getAccessToken()
@@ -121,8 +117,8 @@ func getAccessToken() (string, error) {
 	body, _ := ioutil.ReadAll(resp.Body)
 	var result struct {
 		AccessToken string `json:"access_token"`
-		ErrCode     int    `json:"errcode"`
-		ErrMsg      string `json:"errmsg"`
+		ErrCode    int    `json:"errcode"`
+		ErrMsg     string `json:"errmsg"`
 	}
 	if err := json.Unmarshal(body, &result); err != nil {
 		return "", fmt.Errorf("解析token响应失败: %v", err)
@@ -206,44 +202,53 @@ func uploadImage(token string, imageData []byte, filename string) (string, error
 func mdToWechatHTML(md string) string {
 	html := md
 
-	re := regexp.MustCompile("```
-<br>
-(\\w*)\\n([\\s\\S]*?)
-<br>
-```")
-	html = re.ReplaceAllStringFunc(html, func(match string) string {
-		m := re.FindStringSubmatch(match)
-		if len(m) < 3 {
-			return match
-		}
-		return "<pre><code>" + htmlEscape(m[2]) + "</code></pre>"
-	})
-
-	html = regexp.MustCompile("`([^`]+)`").ReplaceAllStringFunc(html, func(match string) string {
-		m := regexp.MustCompile("`([^`]+)`").FindStringSubmatch(match)
+	// 代码块
+	codeBlockRe := regexp.MustCompile("(?s)\x60\x60\x60[^\n]*\n(.+?)\x60\x60\x60")
+	html = codeBlockRe.ReplaceAllStringFunc(html, func(match string) string {
+		m := codeBlockRe.FindStringSubmatch(match)
 		if len(m) < 2 {
 			return match
 		}
-		return "<code>" + htmlEscape(m[1]) + "</code>"
+		return "<pre><code>" + htmlEncode(m[1]) + "</code></pre>"
 	})
 
-	html = regexp.MustCompile("(?m)^###\\s+(.*)$").ReplaceAllString(html, "<h4>$1</h4>")
-	html = regexp.MustCompile("(?m)^##\\s+(.*)$").ReplaceAllString(html, "<h3>$1</h3>")
-	html = regexp.MustCompile("(?m)^#\\s+(.*)$").ReplaceAllString(html, "<h2>$1</h2>")
+	// 行内代码
+	inlineCodeRe := regexp.MustCompile("\x60([^\x60]+)\x60")
+	html = inlineCodeRe.ReplaceAllStringFunc(html, func(match string) string {
+		m := inlineCodeRe.FindStringSubmatch(match)
+		if len(m) < 2 {
+			return match
+		}
+		return "<code>" + htmlEncode(m[1]) + "</code>"
+	})
 
-	html = regexp.MustCompile("\\*\\*\\*(.*?)\\*\\*\\*").ReplaceAllString(html, "<strong><em>$1</em></strong>")
-	html = regexp.MustCompile("\\*\\*(.*?)\\*\\*").ReplaceAllString(html, "<strong>$1</strong>")
-	html = regexp.MustCompile("\\*(.*?)\\*").ReplaceAllString(html, "<em>$1</em>")
+	// 标题
+	html = regexp.MustCompile("(?m)^###\\s+(.+)$").ReplaceAllString(html, "<h4>$1</h4>")
+	html = regexp.MustCompile("(?m)^##\\s+(.+)$").ReplaceAllString(html, "<h3>$1</h3>")
+	html = regexp.MustCompile("(?m)^#\\s+(.+)$").ReplaceAllString(html, "<h2>$1</h2>")
 
-	html = regexp.MustCompile("(?m)^>\\s+(.*)$").ReplaceAllString(html, "<blockquote><p>$1</p></blockquote>")
+	// 加粗和斜体
+	html = regexp.MustCompile("\\*\\*\\*(.+?)\\*\\*\\*").ReplaceAllString(html, "<strong><em>$1</em></strong>")
+	html = regexp.MustCompile("\\*\\*(.+?)\\*\\*").ReplaceAllString(html, "<strong>$1</strong>")
+	html = regexp.MustCompile("\\*(.+?)\\*").ReplaceAllString(html, "<em>$1</em>")
+
+	// 引用
+	html = regexp.MustCompile("(?m)^>\\s+(.+)$").ReplaceAllString(html, "<blockquote><p>$1</p></blockquote>")
+
+	// 分割线
 	html = regexp.MustCompile("(?m)^---+$").ReplaceAllString(html, "<hr />")
 
-	html = regexp.MustCompile("(?m)^-\\s+(.*)$").ReplaceAllString(html, "<li>$1</li>")
-	html = regexp.MustCompile("(?m)^\\d+\\.\\s+(.*)$").ReplaceAllString(html, "<li>$1</li>")
+	// 列表
+	html = regexp.MustCompile("(?m)^-\\s+(.+)$").ReplaceAllString(html, "<li>$1</li>")
+	html = regexp.MustCompile("(?m)^\\d+\\.\\s+(.+)$").ReplaceAllString(html, "<li>$1</li>")
 
-	html = regexp.MustCompile("!\\[(.*?)\\]\\((.*?)\\)").ReplaceAllString(html, `<img src="$2" alt="$1" style="max-width:100%%;" />`)
+	// 图片
+	html = regexp.MustCompile("!\\[([^\\]]*)\\]\\(([^)]+)\\)").ReplaceAllString(html, `<img src="$2" alt="$1" style="max-width:100%;" />`)
+
+	// 链接
 	html = regexp.MustCompile("\\[([^\\]]+)\\]\\(([^)]+)\\)").ReplaceAllString(html, `<a href="$2">$1</a>`)
 
+	// 段落
 	paragraphs := strings.Split(html, "\n\n")
 	var result []string
 	for _, p := range paragraphs {
@@ -265,25 +270,32 @@ func mdToWechatHTML(md string) string {
 	return strings.Join(result, "\n")
 }
 
-func htmlEscape(s string) string {
+func htmlEncode(s string) string {
 	s = strings.ReplaceAll(s, "&", "&amp;")
 	s = strings.ReplaceAll(s, "<", "&lt;")
 	s = strings.ReplaceAll(s, ">", "&gt;")
 	return s
 }
 
-func stripMarkdown(md string) string {
-	re := regexp.MustCompile("[#*`\\[\\]()>-]")
-	s := re.ReplaceAllString(md, "")
+func makeDigest(md string) string {
+	// 去掉 markdown 符号
+	s := md
+	re := regexp.MustCompile("[#*\x60\\[\\]()>-]")
+	s = re.ReplaceAllString(s, "")
 	s = strings.ReplaceAll(s, "\n", " ")
 	s = strings.ReplaceAll(s, "  ", " ")
-	return strings.TrimSpace(s)
+	s = strings.TrimSpace(s)
+	if len(s) > 54 {
+		return s[:54] + "..."
+	}
+	return s
 }
 
 // ---- 图片处理 ----
 
 func processImages(htmlContent, token string) (string, error) {
-	matches := regexp.MustCompile(`<img[^>]+src=["']([^"']+)["'][^>]*>`).FindAllStringSubmatch(htmlContent, -1)
+	imgRe := regexp.MustCompile(`<img[^>]+src=["']([^"']+)["'][^>]*>`)
+	matches := imgRe.FindAllStringSubmatch(htmlContent, -1)
 	for _, m := range matches {
 		src := m[1]
 		if !strings.HasPrefix(src, "http://") && !strings.HasPrefix(src, "https://") {

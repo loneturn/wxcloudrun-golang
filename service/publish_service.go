@@ -129,11 +129,13 @@ func getAccessToken() (string, error) {
 	return result.AccessToken, nil
 }
 
-func addDraft(token string, articles []interface{}) (struct {
+type wxResp struct {
 	MediaID string `json:"media_id"`
 	ErrCode int    `json:"errcode"`
 	ErrMsg  string `json:"errmsg"`
-}, error) {
+}
+
+func addDraft(token string, articles []interface{}) (wxResp, error) {
 	url := fmt.Sprintf("https://api.weixin.qq.com/cgi-bin/draft/add?access_token=%s", token)
 	payload := map[string]interface{}{"articles": articles}
 	bodyBytes, _ := json.Marshal(payload)
@@ -141,21 +143,17 @@ func addDraft(token string, articles []interface{}) (struct {
 	client := &http.Client{Timeout: 15 * time.Second}
 	resp, err := client.Post(url, "application/json", bytes.NewReader(bodyBytes))
 	if err != nil {
-		return struct{ MediaID string; ErrCode int; ErrMsg string }{}, fmt.Errorf("请求草稿接口失败: %v", err)
+		return wxResp{}, fmt.Errorf("请求草稿接口失败: %v", err)
 	}
 	defer resp.Body.Close()
 
 	respBody, _ := ioutil.ReadAll(resp.Body)
-	var result struct {
-		MediaID string `json:"media_id"`
-		ErrCode int    `json:"errcode"`
-		ErrMsg  string `json:"errmsg"`
-	}
+	var result wxResp
 	if err := json.Unmarshal(respBody, &result); err != nil {
-		return struct{ MediaID string; ErrCode int; ErrMsg string }{}, fmt.Errorf("解析草稿响应失败: %v", err)
+		return wxResp{}, fmt.Errorf("解析草稿响应失败: %v", err)
 	}
 	if result.ErrCode != 0 {
-		return struct{ MediaID string; ErrCode int; ErrMsg string }{}, fmt.Errorf("微信错误: code=%d msg=%s", result.ErrCode, result.ErrMsg)
+		return wxResp{}, fmt.Errorf("微信错误: code=%d msg=%s", result.ErrCode, result.ErrMsg)
 	}
 	return result, nil
 }
